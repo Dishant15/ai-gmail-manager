@@ -101,17 +101,51 @@ EMAIL_POLL_INTERVAL=60  # seconds between inbox checks
 3. Navigate to **APIs & Services → Library**
 4. Search for **Gmail API** → click **Enable**
 
-#### 5b. Create OAuth credentials
-1. **APIs & Services → Credentials → Create Credentials → OAuth client ID**
-2. Application type: **Desktop app**
-3. Click **Download JSON**
-4. Rename the downloaded file to `credentials.json` and place it in the project root
+#### 5b. Configure Branding
+1. Go to **APIs & Services → OAuth consent screen** (may appear as **Google Auth Platform** in newer UI)
+2. Click **"Branding"** in the left sidebar
+3. Fill in the required fields:
+   - App name: `RAG Email Agent`
+   - User support email: your Gmail address
+   - Developer contact email: your Gmail address
+4. Click **Save**
 
-#### 5c. Run the OAuth setup
+#### 5c. Configure Audience & add yourself as a test user
+1. Click **"Audience"** in the left sidebar
+2. Make sure the publishing status is set to **"Testing"** — this is correct for personal use
+3. Under **"Test users"** click **"+ Add users"**
+4. Enter your own Gmail address and click **Save**
+
+> **Why Testing mode?** In Testing mode only Gmail addresses you explicitly add as test users can authenticate. This is exactly what you want for a personal tool. Google requires a formal security audit to publish apps that access Gmail — for personal use Testing mode works permanently with no limitations.
+
+#### 5d. Create OAuth credentials
+1. Click **"Clients"** in the left sidebar (or **Credentials → Create Credentials → OAuth client ID**)
+2. Click **"+ Create Client"**
+3. Application type: **Desktop app** ← must be Desktop app, not Web application
+4. Name: `RAG Email Agent`
+5. Click **Create** → **Download JSON**
+6. Rename the downloaded file to `credentials.json` and place it in the project root
+
+> **Verify your credentials.json** — open it and confirm it starts with `"installed": {`. If it starts with `"web": {` the wrong application type was selected — delete and recreate as Desktop app.
+
+#### 5e. Run the OAuth setup
 ```bash
 python setup_gmail.py
 ```
-A browser window will open. Sign in and grant access. A `token.json` is saved automatically.
+A browser window will open. You may see an "unverified app" warning — click **Advanced → Go to RAG Email Agent (unsafe)** to proceed. Sign in with the Gmail address you added as a test user. A `token.json` is saved automatically.
+
+---
+
+#### 🔮 Future: what changes if you publish this app?
+
+If you ever want other people's Gmail accounts to use this agent (not just your own), you would need to:
+
+1. Go to **Audience** and click **"Publish app"** to switch from Testing to Production
+2. Add the three Gmail OAuth scopes to the **Scopes** section and request verification
+3. Submit the app for **Google's OAuth verification review** — this involves providing a privacy policy URL, a demo video, and waiting for Google's security team to audit the app (typically 1–4 weeks)
+4. Until verification is approved, external users will see an "unverified app" warning
+
+For personal use on your own Gmail account, none of this is needed — **Testing mode is permanent and has no expiry or limitations for the email address you added as a test user.**
 
 ### 6. Start the application
 
