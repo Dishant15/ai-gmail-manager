@@ -106,8 +106,12 @@ async def health():
 @app.get("/polling/status", response_model=PollingStatus, tags=["polling"])
 async def polling_status():
     config = load_agent_config()
+    # Check the job's own state, not the scheduler's — the scheduler stays
+    # alive even when the job is paused, so scheduler.running is always True.
+    job = scheduler.get_job("email_poller")
+    job_running = job is not None and job.next_run_time is not None
     return PollingStatus(
-        running=scheduler.running,
+        running=job_running,
         interval_seconds=settings.email_poll_interval,
         gmail_address=settings.gmail_address,
         auto_reply_enabled=config.auto_reply_enabled,
@@ -125,7 +129,12 @@ async def trigger_poll():
 @app.post("/polling/start", response_model=StatusResponse, tags=["polling"])
 async def start_polling():
     _start_scheduler()
-    if not scheduler.get_job("email_poller"):
+    job = scheduler.get_job("email_poller")
+    if job:
+        # Job exists but was paused — resume it
+        job.resume()
+    else:
+        # Job was never created (shouldn't normally happen) — add it fresh
         scheduler.add_job(
             run_polling_cycle,
             "interval",

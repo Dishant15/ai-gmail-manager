@@ -95,7 +95,7 @@ class AgentConfig(BaseModel):
         description="Signature appended to every reply.",
     )
     auto_reply_enabled: bool = Field(
-        default=True,
+        default=False,
         description="When False the agent drafts replies but does not send them.",
     )
     max_reply_tokens: int = Field(
@@ -138,7 +138,7 @@ class StatusResponse(BaseModel):
 
 
 class PollingStatus(BaseModel):
-    running: bool
+    running: bool                # True = job is active and scheduled, False = job is paused
     interval_seconds: int
     gmail_address: str
     auto_reply_enabled: bool

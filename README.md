@@ -333,3 +333,4 @@ python cleanup_mistral.py --force
 | Model download is slow | Be patient on first run — it is cached afterward |
 | `invalid_grant` OAuth error | Delete `token.json` and re-run `setup_gmail.py` |
 | No emails being processed | Check `GET /polling/status` and `POST /polling/trigger` |
+| Failed building wheel for sentencepiece | remove sentencepiece from requirements and manually run `brew install cmake pkg-config && pip install sentencepiece` |
