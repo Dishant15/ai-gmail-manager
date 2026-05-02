@@ -3,10 +3,14 @@ app/config.py - Pydantic settings & shared data models
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Optional
 from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Disable ChromaDB anonymous telemetry to silence warnings
+os.environ["ANONYMIZED_TELEMETRY"] = "False"
 
 
 # ──────────────────────────────────────────────────────────────
@@ -25,13 +29,25 @@ class Settings(BaseSettings):
     gmail_token_path: str = "token.json"
     gmail_address: str = "your@gmail.com"
 
-    # HuggingFace / Mistral
+    # ── LLM Provider ──────────────────────────────────────────────────────────
+    # "ollama"       — recommended for Apple Silicon (fast, stable, no OOM)
+    # "huggingface"  — loads model weights directly into Python (CUDA/CPU/MPS)
+    llm_provider: str = "ollama"
+
+    # ── Ollama settings (used when LLM_PROVIDER=ollama) ───────────────────
+    ollama_model: str = "qwen2.5:7b"
+    ollama_base_url: str = "http://localhost:11434"
+    ollama_temperature: float = 0.0
+    ollama_max_tokens: int = 512
+    ollama_keep_alive: str = "5m"   # how long Ollama keeps model loaded in memory
+
+    # ── HuggingFace settings (used when LLM_PROVIDER=huggingface) ─────────
     hf_model_id: str = "mistralai/Mistral-7B-Instruct-v0.3"
-    hf_device: str = "auto"
-    hf_load_in_4bit: bool = True
+    hf_device: str = "cpu"          # cpu | cuda | mps | auto
+    hf_load_in_4bit: bool = False   # CUDA only
     hf_max_new_tokens: int = 512
 
-    # Embeddings
+    # ── Embeddings (always local, always CPU, used by both providers) ──────
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
 
     # Vector store
@@ -85,7 +101,7 @@ class AgentConfig(BaseModel):
         default=(
             "You are a helpful email assistant. "
             "Use the provided context from the knowledge base to answer emails accurately and professionally. "
-            "Keep replies concise and polite. "
+            "Keep replies helpful and polite. "
             "If the context does not contain enough information to answer, say so honestly."
         ),
         description="System prompt that controls the agent's persona and behaviour.",
@@ -100,9 +116,9 @@ class AgentConfig(BaseModel):
     )
     max_reply_tokens: int = Field(
         default=512,
-        ge=64,
-        le=2048,
-        description="Maximum tokens for generated reply.",
+        ge=0,
+        le=32768,
+        description="Maximum tokens for generated reply. Set to 0 for model default (no cap).",
     )
 
 
@@ -143,3 +159,16 @@ class PollingStatus(BaseModel):
     gmail_address: str
     auto_reply_enabled: bool
     documents_indexed: int
+
+
+class TestReplyRequest(BaseModel):
+    subject: str
+    body: str
+    sender_name: Optional[str] = "Test User"
+
+
+class TestReplyResponse(BaseModel):
+    reply: str
+    context: str
+    model: str
+    log_path: str

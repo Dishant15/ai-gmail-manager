@@ -11,6 +11,7 @@ Interactive docs (no curl needed): **http://localhost:8000/docs**
 - [Health](#-health)
 - [Polling — Inbox Monitoring](#-polling--inbox-monitoring)
 - [Agent Configuration](#-agent-configuration)
+- [Testing & Validation](#-testing--validation)
 - [Knowledge Base — PDF Management](#-knowledge-base--pdf-management)
 - [Logs](#-logs)
 - [Controlling Auto-Replies](#-controlling-auto-replies)
@@ -184,7 +185,7 @@ curl -X PUT http://localhost:8000/agent/config \
 | `system_prompt` | string | Controls the agent's persona and behaviour. Injected into every Mistral prompt. |
 | `reply_signature` | string | Appended to the end of every reply. Use `\n\n` for line breaks. |
 | `auto_reply_enabled` | boolean | `true` = send replies automatically. `false` = draft mode, logs replies but does not send. |
-| `max_reply_tokens` | integer | Maximum length of generated reply. Range: 64–2048. |
+| `max_reply_tokens` | integer | Maximum length of generated reply. Range: 0–32768. Set to `0` for no limit (model default). |
 
 **Response:** the full updated config object (same shape as `GET /agent/config`).
 
@@ -206,6 +207,50 @@ curl -X POST http://localhost:8000/agent/config/reset
   "max_reply_tokens": 512
 }
 ```
+
+---
+
+## 🧪 Testing & Validation
+
+These endpoints allow you to test the agent's logic without interacting with Gmail or creating permanent logs.
+
+---
+
+### `POST /agent/test-reply`
+Simulate the RAG + LLM pipeline for a given subject and body. This is the best way to verify that your uploaded PDFs and system prompt are working as expected.
+
+```bash
+curl -X POST http://localhost:8000/agent/test-reply \
+  -H "Content-Type: application/json" \
+  -d '{
+    "subject": "Question about pricing",
+    "body": "Hi, I saw your documents and wanted to know about the monthly cost.",
+    "sender_name": "Test User"
+  }'
+```
+
+**Fields:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `subject` | string | Yes | The subject line to simulate. |
+| `body` | string | Yes | The email body content to simulate. |
+| `sender_name` | string | No | The name to use as the simulated sender. Defaults to "Test User". |
+
+**Response:**
+```json
+{
+  "reply": "Thank you for your interest. Based on our current documentation, our monthly plan starts at $19/user...",
+  "context": "[Source 1: pricing.pdf]\nMonthly pricing starts at $19...",
+  "model": "qwen2.5:7b",
+  "log_path": "ai_logs/2025-04-30/12-00-00_test_abc123.json"
+}
+```
+
+**Notes:**
+- **No emails are sent.**
+- **No records are added to `/logs`** (the summary table).
+- **A detailed JSON log IS written to `ai_logs/`** for every test request, using a mock email ID and thread ID. Use the `log_path` from the response to find the file.
 
 ---
 

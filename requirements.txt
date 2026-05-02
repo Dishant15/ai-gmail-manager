@@ -9,14 +9,23 @@ langchain-community==0.3.24
 langchain-huggingface==0.1.2
 langchain-chroma==0.2.4
 
-# HuggingFace / Mistral (local)
+# HTML to Markdown conversion (email body cleaning)
+markdownify==0.13.1
+
+# ── Ollama provider ──────────────────────────────────────────────────────
+# Ollama Python client — used when LLM_PROVIDER=ollama
+ollama==0.4.7
+
+# ── HuggingFace provider ──────────────────────────────────────────────────
+# Required when LLM_PROVIDER=huggingface
+# Also required for embeddings regardless of provider (all-MiniLM-L6-v2)
 transformers==4.51.3
 torch==2.6.0
 accelerate==1.6.0
 # NOTE: bitsandbytes is CUDA (NVIDIA) only — not needed on Apple Silicon MPS.
 # If you are on a Linux/Windows machine with an NVIDIA GPU, uncomment this:
 # bitsandbytes==0.49.2
-sentencepiece==0.2.0
+# sentencepiece==0.2.0
 einops==0.8.1
 
 # Vector Store — must be >=1.0.9 to satisfy langchain-chroma 0.2.4

@@ -1,13 +1,18 @@
 # 📬 RAG Email Agent
 
-An autonomous Gmail reply agent that uses a **local Mistral 7B LLM** with **Retrieval-Augmented Generation (RAG)** to automatically draft and send professional email replies — powered by LangChain, ChromaDB, and FastAPI.
+An autonomous Gmail reply agent that uses a **local LLM** with **Retrieval-Augmented Generation (RAG)** to automatically draft and send professional email replies — powered by LangChain, ChromaDB, FastAPI, and your choice of LLM provider.
 
 ```
 Gmail Inbox ──► FastAPI Poller ──► RAG Retrieval (ChromaDB)
-                                         │
-                                    Mistral 7B (local)
-                                         │
-                              Auto-Reply via Gmail API
+                                          │
+                             ┌────────────┴────────────┐
+                             │                         │
+                        Ollama Server           HuggingFace
+                      (qwen2.5, mistral…)    (Mistral, Llama…)
+                             │                         │
+                             └────────────┬────────────┘
+                                          │
+                               Auto-Reply via Gmail API
 ```
 
 ---
@@ -16,37 +21,140 @@ Gmail Inbox ──► FastAPI Poller ──► RAG Retrieval (ChromaDB)
 
 ```
 rag-email-agent/
-├── main.py                  # Uvicorn entry point
-├── setup_gmail.py           # One-time OAuth2 setup
-├── cleanup_mistral.py       # Remove cached model weights from disk
+├── main.py                    # Uvicorn entry point
+├── setup_gmail.py             # One-time Gmail OAuth2 setup
+├── cleanup_mistral.py         # Remove cached HuggingFace model weights
 ├── requirements.txt
-├── .env.example             # Copy to .env and configure
-├── credentials.json         # Gmail OAuth (you provide this)
-├── uploads/                 # Uploaded PDF knowledge base files
-├── chroma_db/               # ChromaDB vector store (auto-created)
-│   ├── doc_metadata.json    # Document index metadata
-│   ├── agent_config.json    # Persisted agent configuration
-│   └── reply_log.json       # History of all replies
+├── .env.example               # Copy to .env and configure
+├── credentials.json           # Gmail OAuth (you provide this)
+├── uploads/                   # Uploaded PDF knowledge base files
+├── chroma_db/                 # ChromaDB vector store (auto-created)
+│   ├── doc_metadata.json      # Document index metadata
+│   ├── agent_config.json      # Persisted agent configuration
+│   └── reply_log.json         # History of all replies
 └── app/
-    ├── config.py            # Pydantic settings + data models
-    ├── gmail_service.py     # Gmail OAuth2 + fetch/send
-    ├── rag_engine.py        # PDF ingestion + ChromaDB + retrieval
-    ├── llm_service.py       # Local Mistral via HuggingFace
-    └── agent.py             # Orchestrator + scheduler
-    └── api.py               # All FastAPI routes
+    ├── config.py              # Pydantic settings + all data models
+    ├── gmail_service.py       # Gmail OAuth2 + fetch/send emails
+    ├── rag_engine.py          # PDF ingestion + ChromaDB + retrieval
+    ├── agent.py               # Orchestrator + APScheduler polling
+    ├── api.py                 # All FastAPI routes
+    └── llm_services/          # Pluggable LLM provider system
+        ├── __init__.py        # Provider router — reads LLM_PROVIDER from .env
+        ├── base.py            # Shared prompt builder (used by all providers)
+        ├── ollama_service.py  # Ollama provider (recommended)
+        └── huggingface_service.py  # HuggingFace provider (CUDA machines)
+```
+
+### LLM provider system
+
+The `llm_services/` package lets you switch LLM backends with a single env var — no code changes needed. The rest of the app (`agent.py`) always imports from `app.llm_services` and is completely unaware of which provider is active.
+
+```
+agent.py
+   │
+   └── from app.llm_services import generate_reply
+              │
+              ▼
+        __init__.py  reads LLM_PROVIDER
+              │
+       ┌──────┴──────┐
+       ▼             ▼
+ ollama_service  huggingface_service
+       │             │
+  Ollama API    HuggingFace
+  (external     Transformers
+   process)     (in-process)
+       │             │
+       └──────┬──────┘
+              ▼
+        base.py  (shared prompt builder)
 ```
 
 ---
 
 ## ⚙️ Requirements
 
-| Component | Minimum |
-|-----------|---------|
-| Python | 3.10+ |
-| RAM | 16 GB (32 GB recommended for 4-bit model) |
-| Disk | 20 GB free (model weights ~14 GB) |
-| GPU | Optional — NVIDIA CUDA for acceleration |
-| OS | Linux / macOS / Windows (WSL2) |
+| Component | Ollama provider | HuggingFace provider |
+|-----------|----------------|---------------------|
+| Python | 3.10+ | 3.10+ |
+| RAM | 8 GB+ (model runs outside Python) | 16 GB minimum, 32 GB recommended |
+| Disk | Space for Ollama models (~4–8 GB per model) | ~20 GB (model weights) |
+| GPU | Handled automatically by Ollama | NVIDIA CUDA optional |
+| OS | Linux / macOS / Windows | Linux / macOS / Windows (WSL2) |
+| Extra | Ollama installed | — |
+
+> **Apple Silicon (M1/M2/M3/M4):** Use the **Ollama provider**. HuggingFace causes MPS buffer errors and CPU inference is very slow for 7B models. Ollama handles Apple Silicon natively and runs Qwen 2.5 at ~4–8 tokens/sec.
+
+---
+
+## 🦙 Running Ollama (recommended)
+
+Ollama is a local model server that runs as a background process on your machine. It handles all model loading, memory management, and Apple Silicon optimisation automatically — you just point the agent at it.
+
+### Install Ollama
+
+Download and install from [https://ollama.com/download](https://ollama.com/download).
+
+After installation, Ollama runs automatically as a background service. No manual starting needed — it launches at login.
+
+### Pull a model
+
+```bash
+# Recommended for Apple Silicon M-series (fast, high quality)
+ollama pull qwen2.5:7b
+
+# Higher quality — needs ~16 GB free RAM
+ollama pull qwen2.5:14b
+
+# Alternative if you prefer Mistral
+ollama pull mistral:7b
+
+# Fastest option, lower quality — good for testing
+ollama pull llama3.2:3b
+```
+
+### Verify Ollama is running
+
+```bash
+# List all pulled models
+ollama list
+
+# Test a model directly in terminal
+ollama run qwen2.5:7b "Say hello"
+
+# Check the API is reachable
+curl http://localhost:11434
+# Should return: Ollama is running
+```
+
+### Managing Ollama
+
+```bash
+# Check status
+ollama list
+
+# Remove a model (frees disk space)
+ollama rm qwen2.5:7b
+
+# See what is currently loaded in memory
+ollama ps
+
+# Stop a running model (free RAM)
+ollama stop qwen2.5:7b
+
+# Start Ollama manually if it stopped
+ollama serve
+```
+
+### Ollama memory behaviour
+
+By default Ollama keeps a model loaded in RAM for 5 minutes after the last request, then unloads it. This is controlled by `OLLAMA_KEEP_ALIVE` in `.env`:
+
+```dotenv
+OLLAMA_KEEP_ALIVE=5m    # unload after 5 min idle (default — saves RAM)
+OLLAMA_KEEP_ALIVE=-1    # keep loaded forever (faster responses)
+OLLAMA_KEEP_ALIVE=0     # unload immediately after each request
+```
 
 ---
 
@@ -72,7 +180,13 @@ source .venv/bin/activate        # Linux/macOS
 pip install -r requirements.txt
 ```
 
-> **GPU users:** Install the CUDA-enabled PyTorch first:
+> **Apple Silicon Mac:** If `sentencepiece` fails to build, install the missing build tools first:
+> ```bash
+> brew install cmake pkg-config
+> pip install -r requirements.txt
+> ```
+
+> **NVIDIA GPU (HuggingFace provider):** Install CUDA-enabled PyTorch first:
 > ```bash
 > pip install torch --index-url https://download.pytorch.org/whl/cu121
 > ```
@@ -83,14 +197,21 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Edit `.env` — the key values to set:
-
+**For Ollama (recommended):**
 ```dotenv
+LLM_PROVIDER=ollama
+OLLAMA_MODEL=qwen2.5:7b
 GMAIL_ADDRESS=you@gmail.com
-HF_MODEL_ID=mistralai/Mistral-7B-Instruct-v0.3   # or Mistral-7B-Instruct-v0.2
-HF_DEVICE=auto          # auto = GPU if available, else CPU
-HF_LOAD_IN_4BIT=true    # saves ~8 GB VRAM, requires CUDA
-EMAIL_POLL_INTERVAL=60  # seconds between inbox checks
+EMAIL_POLL_INTERVAL=60
+```
+
+**For HuggingFace (NVIDIA GPU machines):**
+```dotenv
+LLM_PROVIDER=huggingface
+HF_MODEL_ID=mistralai/Mistral-7B-Instruct-v0.3
+HF_DEVICE=cuda
+HF_LOAD_IN_4BIT=true
+GMAIL_ADDRESS=you@gmail.com
 ```
 
 ### 5. Set up Gmail OAuth2
@@ -158,74 +279,72 @@ The server starts at **http://localhost:8000**
 - Interactive API docs: **http://localhost:8000/docs**
 - OpenAPI schema: **http://localhost:8000/openapi.json**
 
-> **First run:** The Mistral model (~14 GB) will be downloaded from HuggingFace Hub. This takes time depending on your internet connection. It is cached locally and reused on subsequent starts.
+> **Ollama provider:** Make sure Ollama is running and your model is pulled before starting. The agent will log a warning if the model is not found.
+
+> **HuggingFace provider:** The model (~14 GB) downloads from HuggingFace Hub on first run and is cached locally for subsequent starts.
+
+---
+
+## 🔀 Switching LLM Providers
+
+Change one line in `.env` and restart — no code changes needed:
+
+```dotenv
+LLM_PROVIDER=ollama       # use Ollama server (recommended)
+LLM_PROVIDER=huggingface  # use HuggingFace Transformers
+```
+
+### Provider comparison
+
+| | Ollama | HuggingFace |
+|---|---|---|
+| Apple Silicon | ✅ Native MPS support | ❌ OOM errors on 7B+ models |
+| NVIDIA GPU | ✅ Supported | ✅ With 4-bit quantization |
+| CPU fallback | ✅ Fast | ⚠️ Very slow on 7B models |
+| Memory usage | Low (outside Python) | High (loaded in-process) |
+| Speed (M4 Pro) | ~4–8 tok/s | ~1–3 tok/s (CPU only) |
+| Model management | `ollama pull / rm` | HuggingFace Hub cache |
+| Setup complexity | Install Ollama app | pip install only |
 
 ---
 
 ## 📡 API Reference
 
-### Polling
+Full API documentation is in [`api_docs.md`](./api_docs.md).
+
+### Quick reference
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `GET` | `/polling/status` | Agent status, interval, document count |
-| `POST` | `/polling/trigger` | Manually run one inbox check cycle |
+| `POST` | `/polling/trigger` | Manually run one inbox check |
 | `POST` | `/polling/start` | Resume scheduled polling |
 | `POST` | `/polling/stop` | Pause scheduled polling |
-
-### Agent Configuration
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
 | `GET` | `/agent/config` | View current agent config |
-| `PUT` | `/agent/config` | Update system prompt, signature, auto-reply toggle |
-| `POST` | `/agent/config/reset` | Reset to defaults |
-
-**Example — update system prompt:**
-```bash
-curl -X PUT http://localhost:8000/agent/config \
-  -H "Content-Type: application/json" \
-  -d '{
-    "system_prompt": "You are a customer support agent for Acme Corp. Be concise and always offer a solution.",
-    "reply_signature": "\n\nBest,\nSupport Team",
-    "auto_reply_enabled": true
-  }'
-```
-
-### Knowledge Base
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
+| `PUT` | `/agent/config` | Update system prompt, signature, auto-reply |
+| `POST` | `/agent/config/reset` | Reset config to defaults |
 | `GET` | `/knowledge/documents` | List indexed PDFs |
 | `POST` | `/knowledge/upload` | Upload + index a PDF |
 | `DELETE` | `/knowledge/documents/{filename}` | Remove a PDF |
-
-**Example — upload a PDF:**
-```bash
-curl -X POST http://localhost:8000/knowledge/upload \
-  -F "file=@/path/to/faq.pdf"
-```
-
-### Logs
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/logs?limit=50` | View reply history |
+| `GET` | `/logs` | View reply history |
 
 ---
 
 ## 🛠️ Customisation
 
-### Changing the LLM
+### Changing the Ollama model
 
-Edit `.env`:
 ```dotenv
-# Smaller / faster
-HF_MODEL_ID=mistralai/Mistral-7B-Instruct-v0.2
-
-# More capable (requires more VRAM)
-HF_MODEL_ID=mistralai/Mixtral-8x7B-Instruct-v0.1
+OLLAMA_MODEL=qwen2.5:14b
 ```
+Then: `ollama pull qwen2.5:14b` and restart the app.
+
+### Changing the HuggingFace model
+
+```dotenv
+HF_MODEL_ID=mistralai/Mistral-7B-Instruct-v0.2
+```
+The new model downloads automatically on next start.
 
 ### Disabling auto-reply (draft mode)
 
@@ -234,78 +353,51 @@ curl -X PUT http://localhost:8000/agent/config \
   -H "Content-Type: application/json" \
   -d '{"auto_reply_enabled": false}'
 ```
-The agent will process emails and log generated replies without sending them.
+The agent processes emails and logs what it would send, without actually sending.
 
 ### Adjusting RAG chunk size
 
-Edit `.env`:
 ```dotenv
 RAG_CHUNK_SIZE=800
 RAG_CHUNK_OVERLAP=150
 RAG_TOP_K=3
 ```
-Then re-upload your PDFs (old chunks are replaced automatically).
+Re-upload your PDFs after changing these — old chunks are replaced automatically.
 
 ---
 
 ## 🧹 Cleaning Up Model Files
 
-If you no longer need Mistral (e.g. switching to a different LLM), use the included cleanup script to reclaim the ~14 GB of disk space taken by locally cached model weights.
+If you used the HuggingFace provider and want to reclaim disk space, use the included cleanup script.
 
-### Where the files live
-
-HuggingFace never stores weights inside the project folder. Everything goes into a global cache:
+### Where HuggingFace model files live
 
 | OS | Cache location |
 |----|---------------|
 | Linux / macOS | `~/.cache/huggingface/hub/` |
 | Windows | `C:\Users\<you>\.cache\huggingface\hub\` |
 
-Inside that folder, `mistralai/Mistral-7B-Instruct-v0.3` is stored as `models--mistralai--Mistral-7B-Instruct-v0.3` — a single directory holding all weight shards, tokenizer files, and config (~14 GB). The embedding model and PyTorch kernel cache add a smaller amount on top.
-
 ### Running the cleanup script
 
 ```bash
-# 1. Preview what will be deleted — nothing is touched
+# Preview what will be deleted — nothing is touched
 python cleanup_mistral.py --dry-run
 
-# 2. Interactive mode — shows sizes, asks for confirmation before deleting
+# Interactive mode — shows sizes, asks for confirmation
 python cleanup_mistral.py
 
-# 3. Silent deletion, no confirmation prompt
+# Silent deletion, no prompt
 python cleanup_mistral.py --force
-```
-
-### Example output
-
-```
-════════════════════════════════════════════════════════════
-  Mistral & HuggingFace Cache Cleanup
-════════════════════════════════════════════════════════════
-  HuggingFace cache : /home/you/.cache/huggingface/hub
-  Torch cache       : /home/you/.cache/torch
-
-  Targets to clean up:
-  Status       Size         Label
-  ─────────────────────────────────────────────────────────────
-  FOUND        13.84 GB     Model weights: mistralai/Mistral-7B-Instruct-v0.3
-  not found    —            Model weights: mistralai/Mixtral-8x7B-Instruct-v0.1
-  FOUND        88.3 MB      Model weights: sentence-transformers/all-MiniLM-L6-v2
-  FOUND        142 MB       Torch cache (compiled kernels)
-  ─────────────────────────────────────────────────────────────
-  Total reclaimable:         14.07 GB
-
-  Proceed? [y/N]
 ```
 
 ### What the script deletes vs. preserves
 
 | | Items |
 |---|---|
-| **Deleted** | Mistral 7B weights (all v0.1/v0.2/v0.3 variants found), embedding model weights, HuggingFace accelerate cache, Torch compiled kernel cache |
-| **Never touched** | `./chroma_db/` (your vector store), `./uploads/` (your PDFs), `credentials.json` / `token.json`, any other Python packages or projects |
+| **Deleted** | HuggingFace model weights, embedding model cache, Torch kernel cache |
+| **Never touched** | `./chroma_db/`, `./uploads/`, `credentials.json`, `token.json` |
 
-> **Switching models:** After cleanup, update `HF_MODEL_ID` in `.env` to any other HuggingFace model ID. The new model will be downloaded automatically on the next application start.
+> **Ollama models** are not affected by this script. To remove an Ollama model use `ollama rm <model>`.
 
 ---
 
@@ -320,7 +412,7 @@ python cleanup_mistral.py --force
   chroma_db/
   uploads/
   ```
-- The application runs entirely locally. No email content or documents are sent to external services (only HuggingFace Hub for model download).
+- Both providers run entirely locally. No email content or documents leave your machine.
 
 ---
 
@@ -328,9 +420,12 @@ python cleanup_mistral.py --force
 
 | Problem | Solution |
 |---------|----------|
+| `Cannot connect to Ollama` | Open the Ollama app or run `ollama serve` in terminal |
+| `Model not found in Ollama` | Run `ollama pull qwen2.5:7b` (or your configured model) |
+| `Invalid buffer size` / MPS OOM | Switch to `LLM_PROVIDER=ollama` — HuggingFace is unstable on Apple Silicon |
+| `sentencepiece` build fails | Run `brew install cmake pkg-config` then retry `pip install -r requirements.txt` |
 | `credentials.json not found` | Follow step 5 — download from Google Cloud Console |
-| `CUDA out of memory` | Set `HF_LOAD_IN_4BIT=true` or `HF_DEVICE=cpu` |
-| Model download is slow | Be patient on first run — it is cached afterward |
-| `invalid_grant` OAuth error | Delete `token.json` and re-run `setup_gmail.py` |
+| `invalid_grant` OAuth error | Delete `token.json` and re-run `python setup_gmail.py` |
+| `CUDA out of memory` | Set `HF_LOAD_IN_4BIT=true` or switch to `LLM_PROVIDER=ollama` |
 | No emails being processed | Check `GET /polling/status` and `POST /polling/trigger` |
-| Failed building wheel for sentencepiece | remove sentencepiece from requirements and manually run `brew install cmake pkg-config && pip install sentencepiece` |
+| Model download is slow | First run only — HuggingFace models are cached locally after download |

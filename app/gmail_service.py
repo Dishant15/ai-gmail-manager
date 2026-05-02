@@ -1,11 +1,12 @@
 """
 app/gmail_service.py - Gmail OAuth2 authentication, email fetching and reply sending.
+
+Email body cleaning is handled by app.utils.clean_email_body which converts
+HTML emails to Markdown before they enter the RAG pipeline and LLM prompt.
 """
 from __future__ import annotations
 
 import base64
-import email as email_lib
-import os
 import re
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -20,19 +21,23 @@ from googleapiclient.errors import HttpError
 from loguru import logger
 
 from app.config import EmailMessage, settings
+from app.utils import clean_email_body
 
-# Scopes required by the application
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/gmail.send",
-    "https://www.googleapis.com/auth/gmail.modify",  # needed to mark as read
+    "https://www.googleapis.com/auth/gmail.modify",
 ]
 
+
+# ──────────────────────────────────────────────────────────────
+# OAuth
+# ──────────────────────────────────────────────────────────────
 
 def get_gmail_service():
     """
     Authenticate with Gmail via OAuth2 and return a service object.
-    On first run this will open a browser window for the user to authorise.
+    On first run opens a browser for authorisation.
     Subsequent runs reuse the cached token.json.
     """
     creds: Optional[Credentials] = None
@@ -62,26 +67,48 @@ def get_gmail_service():
     return service
 
 
-def _decode_body(payload: dict) -> str:
-    """Recursively extract plain-text body from a Gmail message payload."""
+# ──────────────────────────────────────────────────────────────
+# Body decoding
+# ──────────────────────────────────────────────────────────────
+
+def _extract_raw_body(payload: dict) -> tuple[str, str]:
+    """
+    Recursively extract body content from a Gmail message payload.
+
+    Returns (body_text, mime_type) where mime_type is either
+    'text/plain' or 'text/html' — plain text is always preferred
+    over HTML when both are present in a multipart message.
+    """
     mime_type = payload.get("mimeType", "")
     body_data = payload.get("body", {}).get("data", "")
 
+    # Plain text — best case, return immediately
     if mime_type == "text/plain" and body_data:
-        return base64.urlsafe_b64decode(body_data).decode("utf-8", errors="replace")
+        text = base64.urlsafe_b64decode(body_data).decode("utf-8", errors="replace")
+        return text, "text/plain"
 
+    # Multipart — recurse, preferring plain text parts first
     if mime_type.startswith("multipart/"):
-        for part in payload.get("parts", []):
-            result = _decode_body(part)
-            if result:
-                return result
+        parts = payload.get("parts", [])
 
-    # Fallback: try text/html and strip tags
+        # First pass: look for plain text part
+        for part in parts:
+            text, found_mime = _extract_raw_body(part)
+            if text and found_mime == "text/plain":
+                return text, "text/plain"
+
+        # Second pass: accept HTML if no plain text found
+        for part in parts:
+            text, found_mime = _extract_raw_body(part)
+            if text:
+                return text, found_mime
+
+    # HTML fallback
     if mime_type == "text/html" and body_data:
         html = base64.urlsafe_b64decode(body_data).decode("utf-8", errors="replace")
-        return re.sub(r"<[^>]+>", " ", html).strip()
+        return html, "text/html"
 
-    return ""
+    return "", ""
 
 
 def _parse_address(raw: str) -> tuple[str, str]:
@@ -92,9 +119,21 @@ def _parse_address(raw: str) -> tuple[str, str]:
     return "", raw.strip()
 
 
+# ──────────────────────────────────────────────────────────────
+# Fetch
+# ──────────────────────────────────────────────────────────────
+
 def fetch_unread_emails(service, max_results: int = 10) -> List[EmailMessage]:
     """
     Fetch unread emails from the inbox.
+
+    Body processing pipeline per email:
+      1. Extract raw body (plain text preferred, HTML fallback)
+      2. Pass through clean_email_body() from utils:
+           - HTML bodies are converted to Markdown
+           - Plain text bodies are whitespace-normalised
+      3. Store the clean body in EmailMessage.body
+
     Marks each fetched email as read so it is not processed again.
     """
     messages: List[EmailMessage] = []
@@ -102,11 +141,7 @@ def fetch_unread_emails(service, max_results: int = 10) -> List[EmailMessage]:
         result = (
             service.users()
             .messages()
-            .list(
-                userId="me",
-                q="is:unread in:inbox",
-                maxResults=max_results,
-            )
+            .list(userId="me", q="is:unread in:inbox", maxResults=max_results)
             .execute()
         )
         items = result.get("messages", [])
@@ -120,12 +155,23 @@ def fetch_unread_emails(service, max_results: int = 10) -> List[EmailMessage]:
                 .execute()
             )
 
-            headers = {h["name"].lower(): h["value"] for h in msg["payload"].get("headers", [])}
+            headers = {
+                h["name"].lower(): h["value"]
+                for h in msg["payload"].get("headers", [])
+            }
             sender_raw = headers.get("from", "")
             sender_name, sender_addr = _parse_address(sender_raw)
             subject = headers.get("subject", "(no subject)")
             date_str = headers.get("date", "")
-            body = _decode_body(msg["payload"])
+
+            # Extract raw body then clean it
+            raw_body, mime_type = _extract_raw_body(msg["payload"])
+            clean_body = clean_email_body(raw_body)
+
+            logger.debug(
+                "Email body: mime={} raw_chars={} clean_chars={}",
+                mime_type, len(raw_body), len(clean_body),
+            )
 
             messages.append(
                 EmailMessage(
@@ -134,12 +180,12 @@ def fetch_unread_emails(service, max_results: int = 10) -> List[EmailMessage]:
                     sender=sender_addr,
                     sender_name=sender_name or None,
                     subject=subject,
-                    body=body.strip(),
+                    body=clean_body,
                     received_at=date_str,
                 )
             )
 
-            # Mark as read
+            # Mark as read so we don't process it again
             service.users().messages().modify(
                 userId="me",
                 id=item["id"],
@@ -151,6 +197,10 @@ def fetch_unread_emails(service, max_results: int = 10) -> List[EmailMessage]:
 
     return messages
 
+
+# ──────────────────────────────────────────────────────────────
+# Send
+# ──────────────────────────────────────────────────────────────
 
 def send_reply(service, original: EmailMessage, reply_body: str) -> bool:
     """

@@ -4,3 +4,6 @@
 **credentials.json
 **token.json
 **.pyc
+uploads/**
+ai_logs/**
+chroma_db/**

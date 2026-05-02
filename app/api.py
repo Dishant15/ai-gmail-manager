@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 
 from app.agent import (
+    generate_test_reply,
     get_reply_logs,
     load_agent_config,
     run_polling_cycle,
@@ -25,6 +26,8 @@ from app.config import (
     PollingStatus,
     ReplyLog,
     StatusResponse,
+    TestReplyRequest,
+    TestReplyResponse,
     settings,
 )
 from app.rag_engine import delete_document, get_document_count, ingest_pdf, list_documents
@@ -51,31 +54,25 @@ app.add_middleware(
 # ──────────────────────────────────────────────────────────────
 
 scheduler = BackgroundScheduler()
-_scheduler_started = False
 
 
-def _start_scheduler():
-    global _scheduler_started
-    if not _scheduler_started:
-        scheduler.add_job(
-            run_polling_cycle,
-            "interval",
-            seconds=settings.email_poll_interval,
-            id="email_poller",
-            replace_existing=True,
-            max_instances=1,
-        )
+def _ensure_scheduler_running() -> None:
+    # Start the APScheduler process itself if not already running.
+    # Does NOT add any jobs -- jobs are added explicitly by /polling/start.
+    if not scheduler.running:
         scheduler.start()
-        _scheduler_started = True
-        logger.info(
-            "Email poller scheduled every {} seconds.", settings.email_poll_interval
-        )
+        logger.info("Scheduler process started (no polling job scheduled yet).")
 
 
 @app.on_event("startup")
 async def startup_event():
-    _start_scheduler()
-    logger.info("RAG Email Agent API started.")
+    # Start the scheduler process so it is ready to accept jobs,
+    # but do NOT add the polling job -- user must call POST /polling/start.
+    _ensure_scheduler_running()
+    logger.info(
+        "RAG Email Agent API started. "
+        "Polling is STOPPED by default -- call POST /polling/start to begin."
+    )
 
 
 @app.on_event("shutdown")
@@ -128,7 +125,7 @@ async def trigger_poll():
 
 @app.post("/polling/start", response_model=StatusResponse, tags=["polling"])
 async def start_polling():
-    _start_scheduler()
+    _ensure_scheduler_running()
     job = scheduler.get_job("email_poller")
     if job:
         # Job exists but was paused — resume it
@@ -178,6 +175,27 @@ async def reset_agent_config():
     default = AgentConfig()
     save_agent_config(default)
     return default
+
+
+@app.post("/agent/test-reply", response_model=TestReplyResponse, tags=["agent"])
+async def test_reply(request: TestReplyRequest):
+    """
+    Test the AI reply generation with a mock email subject and body.
+    Does not send any emails or record logs.
+    """
+    try:
+        result = generate_test_reply(
+            subject=request.subject,
+            body=request.body,
+            sender_name=request.sender_name,
+        )
+        return TestReplyResponse(**result)
+    except Exception as exc:
+        logger.error("Test reply failed: {}", exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate test reply: {exc}",
+        )
 
 
 # ──────────────────────────────────────────────────────────────
