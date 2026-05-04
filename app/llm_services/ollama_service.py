@@ -125,4 +125,4 @@ def generate_reply(
     reply = response.message.content.strip()
     logger.debug("Ollama | Reply generated ({} chars).", len(reply))
 
-    return reply + reply_signature
+    return reply + "\n" + reply_signature
